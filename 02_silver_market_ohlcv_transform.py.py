@@ -9,7 +9,7 @@
 # MAGIC
 # MAGIC ## Objetivo
 # MAGIC
-# MAGIC Transformar dados brutos da Bronze em dados limpos, tipados e validados, prontos para analytics.
+# MAGIC Transformar dados brutos da Bronze (Poloniex + Binance) em dados limpos, tipados e validados, unificados por contexto (OHLCV), prontos para analytics cross-exchange.
 # MAGIC
 # MAGIC ## Princípios da Camada Silver
 # MAGIC
@@ -27,13 +27,26 @@
 # MAGIC
 # MAGIC ## Transformações
 # MAGIC
-# MAGIC ### 1. Identificador da Exchange
+# MAGIC ### 1. Normalização de Symbol
 # MAGIC ```sql
-# MAGIC 'poloniex' AS exchange
-# MAGIC ```
-# MAGIC *Justificativa:* Bronze não armazena exchange (implícito no schema). Silver adiciona explicitamente para analytics multi-exchange na Gold.
+# MAGIC -- Poloniex: já vem com underscore (BTC_USDT)
+# MAGIC symbol AS symbol
 # MAGIC
-# MAGIC ### 2. Type Casting de OHLCV
+# MAGIC -- Binance: adicionar underscore (BTCUSDT → BTC_USDT)
+# MAGIC REGEXP_REPLACE(symbol, '([A-Z]+)(USDT|USDC|BTC|ETH)', '$1_$2') AS symbol
+# MAGIC ```
+# MAGIC *Justificativa:* Poloniex usa `BTC_USDT` (com underscore), Binance usa `BTCUSDT` (sem underscore). Silver padroniza com underscore para garantir que o mesmo par de trading tenha identificador único independente da exchange.
+# MAGIC
+# MAGIC *Padrão Silver:* `{BASE}_{QUOTE}` (ex: `BTC_USDT`, `ETH_USDT`, `SOL_USDT`)
+# MAGIC
+# MAGIC ### 2. Identificador da Exchange
+# MAGIC ```sql
+# MAGIC 'poloniex' AS exchange  -- para dados bronze_poloniex_ohlcv
+# MAGIC 'binance' AS exchange   -- para dados bronze_binance_ohlcv
+# MAGIC ```
+# MAGIC *Justificativa:* Bronze tem schemas separados por fonte (domain=exchange). Silver unifica em um único schema por contexto (domain=market), adicionando coluna `exchange` para rastreabilidade e analytics cross-exchange na Gold.
+# MAGIC
+# MAGIC ### 3. Type Casting de OHLCV
 # MAGIC ```sql
 # MAGIC CAST(open AS DECIMAL(18,8)) AS open
 # MAGIC CAST(high AS DECIMAL(18,8)) AS high
@@ -43,14 +56,14 @@
 # MAGIC ```
 # MAGIC *Justificativa:* Bronze armazena como string (tipo nativo da API). Silver converte para DECIMAL para cálculos numéricos precisos.
 # MAGIC
-# MAGIC ### 3. Conversão de Timestamps
+# MAGIC ### 4. Conversão de Timestamps
 # MAGIC ```sql
 # MAGIC FROM_UNIXTIME(start_time_ms / 1000) AS open_time
 # MAGIC FROM_UNIXTIME(close_time_ms / 1000) AS close_time
 # MAGIC ```
 # MAGIC *Justificativa:* Bronze armazena timestamps em millis (formato da API). Silver converte para TIMESTAMP para queries temporais.
 # MAGIC
-# MAGIC ### 4. Validações de Qualidade
+# MAGIC ### 5. Validações de Qualidade
 # MAGIC * Verificar nulos em campos críticos
 # MAGIC * Validar relações OHLC: `high >= low`, `high >= open`, `high >= close`
 # MAGIC * Validar volume positivo: `volume > 0`
@@ -80,6 +93,13 @@
 # MAGIC * **Particionamento:** `rate_date`
 # MAGIC * **Cadência:** D-1 incremental (mesma da Bronze)
 # MAGIC * **Destino:** `uc_sa_br_dev.silver_market_ohlcv.hourly`
+# MAGIC
+# MAGIC ## Fontes de Dados
+# MAGIC
+# MAGIC * **Poloniex:** `uc_sa_br_dev.bronze_poloniex_ohlcv.hourly`
+# MAGIC * **Binance:** `uc_sa_br_dev.bronze_binance_ohlcv.hourly`
+# MAGIC
+# MAGIC **Estratégia de Unificação:** UNION ALL de ambas as fontes com identificador `exchange` para distinguir origem.
 
 # COMMAND ----------
 
@@ -109,13 +129,13 @@ proj = zordon.Project(
     environment="dev",
 )
 
-silver_poloniex = proj.client(
+silver_market = proj.client(
     layer="silver",
     domain="market",
     subdomain="ohlcv",
 )
 
-target_fqn = silver_poloniex.governance.fqn(TABLE_NAME)
+target_fqn = silver_market.governance.fqn(TABLE_NAME)
 logging.info(f"Target FQN: {target_fqn}")
 
 
@@ -123,20 +143,27 @@ logging.info(f"Target FQN: {target_fqn}")
 
 # DBTITLE 1,Read Bronze Data
 spark.sql("""
-    CREATE OR REPLACE TEMPORARY VIEW bronze_raw AS 
+    CREATE OR REPLACE TEMPORARY VIEW bronze_poloniex AS 
     SELECT * FROM uc_sa_br_dev.bronze_poloniex_ohlcv.hourly
 """)
 
-logging.info("Bronze data loaded into temporary view")
+spark.sql("""
+    CREATE OR REPLACE TEMPORARY VIEW bronze_binance AS 
+    SELECT * FROM uc_sa_br_dev.bronze_binance_ohlcv.hourly
+""")
+
+logging.info("Bronze data loaded from Poloniex and Binance")
 
 # COMMAND ----------
 
 # DBTITLE 1,Transform: Bronze to Silver
 spark.sql("""
     CREATE OR REPLACE TEMPORARY VIEW silver_transformed AS
+    
+    -- Poloniex data
     SELECT
         'poloniex' AS exchange,
-        symbol,
+        symbol AS symbol,
         interval,
         trade_count,
         CAST(open AS DECIMAL(18,8)) AS open,
@@ -148,10 +175,31 @@ spark.sql("""
         CAST(FROM_UNIXTIME(start_time_ms / 1000) AS TIMESTAMP) AS open_time,
         rate_date,
         ingested_at
-    FROM bronze_raw
+    FROM bronze_poloniex
+    WHERE CAST(volume AS DECIMAL(18,8)) > 0
+    
+    UNION ALL
+    
+    -- Binance data
+    SELECT
+        'binance' AS exchange,
+        REGEXP_REPLACE(symbol, '([A-Z]+)(USDT|USDC|BTC|ETH)', '$1_$2') AS symbol,
+        interval,
+        trade_count,
+        CAST(open AS DECIMAL(18,8)) AS open,
+        CAST(high AS DECIMAL(18,8)) AS high,
+        CAST(low AS DECIMAL(18,8)) AS low,
+        CAST(close AS DECIMAL(18,8)) AS close,
+        CAST(volume AS DECIMAL(18,8)) AS volume,
+        CAST(FROM_UNIXTIME(close_time_ms / 1000) AS TIMESTAMP) AS close_time,
+        CAST(FROM_UNIXTIME(open_time_ms / 1000) AS TIMESTAMP) AS open_time,
+        rate_date,
+        ingested_at
+    FROM bronze_binance
+    WHERE CAST(volume AS DECIMAL(18,8)) > 0
 """)
 
-logging.info("Silver transformations applied")
+logging.info("Silver transformations applied for both exchanges")
 
 # COMMAND ----------
 
@@ -203,7 +251,7 @@ logging.info(f"Writing {len(partition_dates)} partition(s): {partition_dates}")
 # COMMAND ----------
 
 # DBTITLE 1,Cell 18
-written_fqn = silver_poloniex.write_table(
+written_fqn = silver_market.write_table(
     df=df_silver,
     table_name=TABLE_NAME,
     mode="overwrite",
