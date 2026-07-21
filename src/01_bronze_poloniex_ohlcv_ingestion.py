@@ -134,7 +134,7 @@ def parse_candle(symbol, row):
         "open": row[2],
         "close": row[3],
         "volume": row[5],
-        "start_time_ms": row[12],
+        "open_time_ms": row[12],
         "close_time_ms": row[13],
         "interval": row[11],
         "trade_count": row[8],
@@ -233,7 +233,7 @@ df = (
     .withColumn("ingested_at", F.current_timestamp())
     .withColumn(
         "rate_date",
-        F.to_date(F.from_unixtime(F.col("start_time_ms") / 1000))
+        F.to_date(F.from_unixtime(F.col("open_time_ms") / 1000))
     )
 )
 

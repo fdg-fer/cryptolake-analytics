@@ -66,8 +66,9 @@
 # MAGIC ### 5. Validações de Qualidade
 # MAGIC * Verificar nulos em campos críticos
 # MAGIC * Validar relações OHLC: `high >= low`, `high >= open`, `high >= close`
-# MAGIC * Validar volume positivo: `volume > 0`
 # MAGIC * Validar timestamps válidos: `close_time > open_time`
+# MAGIC
+# MAGIC **Nota sobre Volume Zero:** A camada Silver preserva integralmente os registros retornados pelas exchanges. Registros com volume igual a zero são mantidos quando apresentam informações válidas de OHLC, garantindo fidelidade aos dados de origem. Filtros de volume (quando necessários) devem ser aplicados na Gold ou nas análises específicas de acordo com requisitos de negócio.
 # MAGIC
 # MAGIC ## Schema Silver
 # MAGIC
@@ -172,18 +173,21 @@ spark.sql("""
         CAST(close AS DECIMAL(18,8)) AS close,
         CAST(volume AS DECIMAL(18,8)) AS volume,
         CAST(FROM_UNIXTIME(close_time_ms / 1000) AS TIMESTAMP) AS close_time,
-        CAST(FROM_UNIXTIME(start_time_ms / 1000) AS TIMESTAMP) AS open_time,
+        CAST(FROM_UNIXTIME(open_time_ms / 1000) AS TIMESTAMP) AS open_time,
         rate_date,
         ingested_at
     FROM bronze_poloniex
-    WHERE CAST(volume AS DECIMAL(18,8)) > 0
     
     UNION ALL
     
     -- Binance data
     SELECT
         'binance' AS exchange,
-        REGEXP_REPLACE(symbol, '([A-Z]+)(USDT|USDC|BTC|ETH)', '$1_$2') AS symbol,
+        CONCAT(
+            REGEXP_EXTRACT(symbol, '^([A-Z]+)(USDT|USDC|BTC|ETH)$', 1),
+            '_',
+            REGEXP_EXTRACT(symbol, '^([A-Z]+)(USDT|USDC|BTC|ETH)$', 2)
+        ) AS symbol,
         interval,
         trade_count,
         CAST(open AS DECIMAL(18,8)) AS open,
@@ -196,7 +200,6 @@ spark.sql("""
         rate_date,
         ingested_at
     FROM bronze_binance
-    WHERE CAST(volume AS DECIMAL(18,8)) > 0
 """)
 
 logging.info("Silver transformations applied for both exchanges")
@@ -221,10 +224,6 @@ invalid_ohlc = spark.sql("""
     WHERE high < low OR high < open OR high < close OR low > open OR low > close
 """).collect()[0][0]
 
-invalid_volume = spark.sql("""
-    SELECT COUNT(*) FROM silver_transformed WHERE volume <= 0
-""").collect()[0][0]
-
 invalid_timestamp = spark.sql("""
     SELECT COUNT(*) FROM silver_transformed
     WHERE open_time IS NULL OR close_time IS NULL OR close_time <= open_time
@@ -232,11 +231,9 @@ invalid_timestamp = spark.sql("""
 
 logging.info(f"Validation - Total rows: {null_check.total_rows}")
 logging.info(f"Validation - Invalid OHLC: {invalid_ohlc}")
-logging.info(f"Validation - Invalid volume: {invalid_volume}")
 logging.info(f"Validation - Invalid timestamps: {invalid_timestamp}")
 
 assert invalid_ohlc == 0, "OHLC validation failed"
-assert invalid_volume == 0, "Volume validation failed"
 assert invalid_timestamp == 0, "Timestamp validation failed"
 
 # COMMAND ----------
