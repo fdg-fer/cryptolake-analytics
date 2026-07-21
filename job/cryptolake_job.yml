@@ -1,0 +1,57 @@
+resources:
+  jobs:
+    CryptoLake_Gold_Market_Analysis_Star_Schema:
+      name: CryptoLake Gold - Market Analysis Star Schema
+      tasks:
+        - task_key: Ingestion_bronze_binance
+          notebook_task:
+            notebook_path: /Repos/CryptoLake/cryptolake-analytics/src/01_bronze_binance_ohlcv_ingestion
+            source: WORKSPACE
+        - task_key: Ingestion_bronze_poloniex
+          notebook_task:
+            notebook_path: /Repos/CryptoLake/cryptolake-analytics/src/01_bronze_poloniex_ohlcv_ingestion
+            source: WORKSPACE
+        - task_key: Transform_silver_market_ohlcv
+          depends_on:
+            - task_key: Ingestion_bronze_binance
+            - task_key: Ingestion_bronze_poloniex
+          notebook_task:
+            notebook_path: /Repos/CryptoLake/cryptolake-analytics/src/02_silver_market_ohlcv_transform
+            source: WORKSPACE
+        - task_key: gold_dim_datetime
+          depends_on:
+            - task_key: Transform_silver_market_ohlcv
+          notebook_task:
+            notebook_path: /Repos/CryptoLake/cryptolake-analytics/src/03_gold_dim_datetime
+            source: WORKSPACE
+        - task_key: gold_dim_exchange
+          depends_on:
+            - task_key: Transform_silver_market_ohlcv
+          notebook_task:
+            notebook_path: /Repos/CryptoLake/cryptolake-analytics/src/03_gold_dim_exchange
+            source: WORKSPACE
+        - task_key: gold_dim_symbol
+          depends_on:
+            - task_key: Transform_silver_market_ohlcv
+          notebook_task:
+            notebook_path: /Repos/CryptoLake/cryptolake-analytics/src/03_gold_dim_symbol
+            source: WORKSPACE
+        - task_key: gold_fact_market_daily
+          depends_on:
+            - task_key: gold_dim_datetime
+            - task_key: gold_dim_exchange
+            - task_key: gold_dim_symbol
+          notebook_task:
+            notebook_path: /Repos/CryptoLake/cryptolake-analytics/src/03_gold_fact_ohlcv_daily
+            source: WORKSPACE
+        - task_key: gold_fact_market_hourly
+          depends_on:
+            - task_key: gold_dim_exchange
+            - task_key: gold_dim_symbol
+            - task_key: gold_dim_datetime
+          notebook_task:
+            notebook_path: /Repos/CryptoLake/cryptolake-analytics/src/03_gold_fact_ohlcv
+            source: WORKSPACE
+      queue:
+        enabled: true
+      performance_target: PERFORMANCE_OPTIMIZED
