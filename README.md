@@ -286,19 +286,22 @@ client = proj.client(
 
 ```
 cryptolake-analytics/
+├── Escopo
+│    └── Fase 1 - Plano de Entregra.md
 ├── src/
 │   ├── 01_bronze_binance_ohlcv_ingestion.py
-│   ├── 01_bronze_binance_ohlcv_backfill.py
 │   ├── 01_bronze_poloniex_ohlcv_ingestion.py
-│   ├── 01_bronze_poloniex_ohlcv_backfill.py
 │   ├── 02_silver_market_ohlcv_transform.py
 │   ├── 03_gold_dim_datetime.py
 │   ├── 03_gold_dim_exchange.py
 │   ├── 03_gold_dim_symbol.py
 │   ├── 03_gold_fact_ohlcv.py
-│   └── 03_gold_fact_ohlcv_daily.py
-├── jobs/
-│   └── cryptolake_gold_pipeline.json
+│    03_gold_fact_ohlcv_daily.py
+│   └── backfill
+│       ├── 01_bronze_binance_ohlcv_backfill.py
+│       └── 01_bronze_poloniex_ohlcv_backfill.py
+├── job/
+│   └── cryptolake_job.json
 └── README.md
 ```
 
